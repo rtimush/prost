@@ -16,6 +16,7 @@ use core::u32;
 use core::usize;
 
 use ::bytes::{Buf, BufMut, Bytes};
+use ::bytestring::ByteString;
 
 use crate::DecodeError;
 use crate::Message;
@@ -794,23 +795,116 @@ macro_rules! length_delimited {
 pub mod string {
     use super::*;
 
-    pub fn encode<B>(tag: u32, value: &String, buf: &mut B)
+    pub fn encode<A, B>(tag: u32, value: &A, buf: &mut B)
     where
+        A: StringAdapter,
         B: BufMut,
     {
         encode_key(tag, WireType::LengthDelimited, buf);
         encode_varint(value.len() as u64, buf);
         buf.put_slice(value.as_bytes());
     }
-    pub fn merge<B>(
+    pub fn merge<A, B>(
         wire_type: WireType,
-        value: &mut String,
+        value: &mut A,
         buf: &mut B,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError>
     where
+        A: StringAdapter,
         B: Buf,
     {
+        value.with_bytes_mut(|bytes| bytes::merge_one_copy(wire_type, bytes, buf, ctx))
+    }
+
+    length_delimited!(impl StringAdapter);
+
+    #[cfg(test)]
+    mod test {
+        use proptest::prelude::*;
+
+        use super::super::test::{check_collection_type, check_type};
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn check_string(value: String, tag in MIN_TAG..=MAX_TAG) {
+                super::test::check_type::<String, String>(value, tag, WireType::LengthDelimited,
+                                                          encode, merge, encoded_len)?;
+            }
+
+            #[test]
+            fn check_bytestring(value: String, tag in MIN_TAG..=MAX_TAG) {
+                super::test::check_type::<ByteString, ByteString>(value.into(), tag, WireType::LengthDelimited,
+                                                          encode, merge, encoded_len)?;
+            }
+
+            #[test]
+            fn check_repeated(value: Vec<String>, tag in MIN_TAG..=MAX_TAG) {
+                super::test::check_collection_type(value, tag, WireType::LengthDelimited,
+                                                   encode_repeated, merge_repeated,
+                                                   encoded_len_repeated)?;
+            }
+        }
+    }
+}
+
+pub trait StringAdapter: sealed::StringAdapter {}
+
+pub trait BytesAdapter: sealed::BytesAdapter {}
+
+mod sealed {
+    use super::{Buf, BufMut};
+
+    pub trait StringAdapter: Default + Sized + 'static {
+        type Bytes: super::BytesAdapter;
+
+        fn len(&self) -> usize;
+
+        fn as_bytes(&self) -> &[u8];
+
+        fn with_bytes_mut(
+            &mut self,
+            f: impl FnOnce(&mut Self::Bytes) -> Result<(), crate::error::DecodeError>,
+        ) -> Result<(), crate::error::DecodeError>;
+    }
+
+    pub trait BytesAdapter: Default + Sized + 'static {
+        fn len(&self) -> usize;
+
+        /// Replace contents of this buffer with the contents of another buffer.
+        fn replace_with<B>(&mut self, buf: B)
+        where
+            B: Buf;
+
+        /// Appends this buffer to the (contents of) other buffer.
+        fn append_to<B>(&self, buf: &mut B)
+        where
+            B: BufMut;
+
+        fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+    }
+}
+
+impl StringAdapter for String {}
+
+impl sealed::StringAdapter for String {
+    type Bytes = Vec<u8>;
+
+    fn len(&self) -> usize {
+        String::len(self)
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        String::as_bytes(self)
+    }
+
+    fn with_bytes_mut(
+        &mut self,
+        f: impl FnOnce(&mut Self::Bytes) -> Result<(), DecodeError>,
+    ) -> Result<(), DecodeError> {
         // ## Unsafety
         //
         // `string::merge` reuses `bytes::merge`, with an additional check of utf-8
@@ -833,8 +927,8 @@ pub mod string {
                 }
             }
 
-            let drop_guard = DropGuard(value.as_mut_vec());
-            bytes::merge_one_copy(wire_type, drop_guard.0, buf, ctx)?;
+            let drop_guard = DropGuard(String::as_mut_vec(self));
+            f(drop_guard.0)?;
             match str::from_utf8(drop_guard.0) {
                 Ok(_) => {
                     // Success; do not clear the bytes.
@@ -847,52 +941,35 @@ pub mod string {
             }
         }
     }
-
-    length_delimited!(String);
-
-    #[cfg(test)]
-    mod test {
-        use proptest::prelude::*;
-
-        use super::super::test::{check_collection_type, check_type};
-        use super::*;
-
-        proptest! {
-            #[test]
-            fn check(value: String, tag in MIN_TAG..=MAX_TAG) {
-                super::test::check_type(value, tag, WireType::LengthDelimited,
-                                        encode, merge, encoded_len)?;
-            }
-            #[test]
-            fn check_repeated(value: Vec<String>, tag in MIN_TAG..=MAX_TAG) {
-                super::test::check_collection_type(value, tag, WireType::LengthDelimited,
-                                                   encode_repeated, merge_repeated,
-                                                   encoded_len_repeated)?;
-            }
-        }
-    }
 }
 
-pub trait BytesAdapter: sealed::BytesAdapter {}
+impl StringAdapter for ByteString {}
 
-mod sealed {
-    use super::{Buf, BufMut};
+impl sealed::StringAdapter for ByteString {
+    type Bytes = Bytes;
 
-    pub trait BytesAdapter: Default + Sized + 'static {
-        fn len(&self) -> usize;
+    fn len(&self) -> usize {
+        ByteString::as_bytes(self).len()
+    }
 
-        /// Replace contents of this buffer with the contents of another buffer.
-        fn replace_with<B>(&mut self, buf: B)
-        where
-            B: Buf;
+    fn as_bytes(&self) -> &[u8] {
+        ByteString::as_bytes(self)
+    }
 
-        /// Appends this buffer to the (contents of) other buffer.
-        fn append_to<B>(&self, buf: &mut B)
-        where
-            B: BufMut;
-
-        fn is_empty(&self) -> bool {
-            self.len() == 0
+    fn with_bytes_mut(
+        &mut self,
+        f: impl FnOnce(&mut Self::Bytes) -> Result<(), DecodeError>,
+    ) -> Result<(), DecodeError> {
+        let mut bytes = ByteString::as_bytes(self).clone();
+        f(&mut bytes)?;
+        match ByteString::try_from(bytes) {
+            Ok(bs) => {
+                *self = bs;
+                Ok(())
+            }
+            Err(_) => Err(DecodeError::new(
+                "invalid string value: data is not UTF-8 encoded",
+            )),
         }
     }
 }

@@ -235,6 +235,22 @@ impl Default for BytesType {
     }
 }
 
+/// The type to output for Protobuf `string` fields.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StringType {
+    /// The [`alloc::string::String`] type.
+    String,
+    /// The [`bytestring::ByteString`] type.
+    ByteString,
+}
+
+impl Default for StringType {
+    fn default() -> StringType {
+        StringType::String
+    }
+}
+
 /// Configuration options for Protobuf code generation.
 ///
 /// This configuration builder can be used to set non-default code generation options.
@@ -242,6 +258,7 @@ pub struct Config {
     file_descriptor_set_path: Option<PathBuf>,
     service_generator: Option<Box<dyn ServiceGenerator>>,
     map_type: PathMap<MapType>,
+    string_type: PathMap<StringType>,
     bytes_type: PathMap<BytesType>,
     type_attributes: PathMap<String>,
     message_attributes: PathMap<String>,
@@ -327,6 +344,19 @@ impl Config {
         for matcher in paths {
             self.map_type
                 .insert(matcher.as_ref().to_string(), MapType::BTreeMap);
+        }
+        self
+    }
+
+    pub fn byte_string<I, S>(&mut self, paths: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.string_type.clear();
+        for matcher in paths {
+            self.string_type
+                .insert(matcher.as_ref().to_string(), StringType::ByteString);
         }
         self
     }
@@ -1288,6 +1318,7 @@ impl default::Default for Config {
             file_descriptor_set_path: None,
             service_generator: None,
             map_type: PathMap::default(),
+            string_type: PathMap::default(),
             bytes_type: PathMap::default(),
             type_attributes: PathMap::default(),
             message_attributes: PathMap::default(),

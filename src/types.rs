@@ -9,6 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use ::bytes::{Buf, BufMut, Bytes};
+use bytestring::ByteString;
 
 use crate::{
     encoding::{
@@ -319,6 +320,44 @@ impl Message for String {
     }
     fn clear(&mut self) {
         self.clear();
+    }
+}
+
+/// `google.protobuf.StringValue`
+impl Message for ByteString {
+    fn encode_raw<B>(&self, buf: &mut B)
+    where
+        B: BufMut,
+    {
+        if !self.is_empty() {
+            string::encode(1, self, buf)
+        }
+    }
+    fn merge_field<B>(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut B,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError>
+    where
+        B: Buf,
+    {
+        if tag == 1 {
+            string::merge(wire_type, self, buf, ctx)
+        } else {
+            skip_field(wire_type, tag, buf, ctx)
+        }
+    }
+    fn encoded_len(&self) -> usize {
+        if !self.is_empty() {
+            string::encoded_len(1, self)
+        } else {
+            0
+        }
+    }
+    fn clear(&mut self) {
+        *self = ByteString::new();
     }
 }
 
